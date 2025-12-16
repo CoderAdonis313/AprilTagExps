@@ -1,0 +1,35 @@
+{
+    "camera": "FaceTime HD Camera (1C1C:B782)",
+    "platform": "Macintosh; Intel Mac OS X 10_15_7",
+    "avg_reprojection_error": 2.4965677686835894,
+    "camera_matrix": [
+        [
+            948.549417779676,
+            0,
+            570.3494303121358
+        ],
+        [
+            0,
+            940.9432002988655,
+            343.967467586877
+        ],
+        [
+            0,
+            0,
+            1
+        ]
+    ],
+    "distortion_coefficients": [
+        0.029253537514305077,
+        0.43901198364900257,
+        -0.018038744110287074,
+        -0.03409154715870114,
+        -0.7497248615048877
+    ],
+    "distortion_model": "rectilinear",
+    "img_size": [
+        1280,
+        720
+    ],
+    "calibration_time": "Mon, 24 Feb 2025 00:16:42 GMT"
+}
