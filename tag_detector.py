@@ -5,7 +5,7 @@ dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
 
 # DETECTOR PARAMETERS   
 params = cv2.aruco.DetectorParameters()
-params.cornerRefinementMethod
+params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_APRILTAG    
 
 # DETECTOR
 detector = cv2.aruco.ArucoDetector(dictionary, params)
