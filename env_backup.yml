@@ -1,4 +1,4 @@
-name: apriltags
+name: april
 channels:
   - conda-forge
   - https://repo.anaconda.com/pkgs/main
