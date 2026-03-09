@@ -102,10 +102,6 @@ def view_angle_deg(R, tvec):
     return float(min(phi, 180.0 - phi))
 
 
-import cv2
-import numpy as np
-import time
-
 def cam_loop(detector, K, dist, out_txt, tag_size, cam_index=0, expected_id=None):
     cap = cv2.VideoCapture(cam_index)
     if not cap.isOpened():
@@ -116,6 +112,8 @@ def cam_loop(detector, K, dist, out_txt, tag_size, cam_index=0, expected_id=None
     with open(out_txt, "w") as f:
         f.write("timestamp x y z roll pitch yaw view_angle_deg\n")
 
+        last_row = None  # will hold the most recent valid pose row (string)
+
         while True:
             ok, frame = cap.read()
             if not ok:
@@ -125,58 +123,63 @@ def cam_loop(detector, K, dist, out_txt, tag_size, cam_index=0, expected_id=None
             corners, ids, _ = detector.detectMarkers(gray)
 
             vis = frame.copy()
+            last_row = None  # reset each frame; only set if this frame produced a valid pose
 
-            if ids is None or len(ids) == 0:
-                cv2.imshow('Visualize', vis)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-                continue
+            if ids is not None and len(ids) > 0:
+                # choose tag: expected_id if provided else first one
+                chosen_idx = 0
+                if expected_id is not None:
+                    ids_flat = ids.reshape(-1)
+                    matches = np.where(ids_flat == expected_id)[0]
+                    if len(matches) > 0:
+                        chosen_idx = int(matches[0])
+                    else:
+                        chosen_idx = None  # no expected id found
 
-            # choose tag: expected_id if provided else first one
-            chosen_idx = 0
-            if expected_id is not None:
-                ids_flat = ids.reshape(-1)
-                matches = np.where(ids_flat == expected_id)[0]
-                if len(matches) == 0:
-                    cv2.imshow('Visualize', vis)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        break
-                    continue
-                chosen_idx = int(matches[0])
+                if chosen_idx is not None:
+                    c2d = corners[chosen_idx][0]
+                    tag_id = int(ids[chosen_idx][0])
 
-            c2d = corners[chosen_idx][0]
-            tag_id = int(ids[chosen_idx][0])
+                    # Draw marker outline
+                    pts = c2d.astype(int)
+                    for a, b in zip(pts, np.roll(pts, -1, axis=0)):
+                        cv2.line(vis, tuple(a), tuple(b), (0, 255, 0), 2)
+                    cv2.putText(vis, f"id:{tag_id}", tuple(pts[0]),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
 
-            # Draw marker outline
-            pts = c2d.astype(int)
-            for a, b in zip(pts, np.roll(pts, -1, axis=0)):
-                cv2.line(vis, tuple(a), tuple(b), (0, 255, 0), 2)
-            cv2.putText(vis, f"id:{tag_id}", tuple(pts[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+                    rvec, tvec = pose_from_aruco_corners(c2d, tag_size, K, dist)
+                    if tvec is not None:
+                        # Draw axes
+                        cv2.drawFrameAxes(vis, K, dist, rvec, tvec, tag_size * 0.5)
 
-            rvec, tvec = pose_from_aruco_corners(c2d, tag_size, K, dist)
-            if tvec is None:
-                cv2.imshow('Visualize', vis)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-                continue
+                        # Compute pose values (but DON'T write yet)
+                        R, _ = cv2.Rodrigues(rvec)
+                        x, y, z = map(float, tvec.reshape(3))
+                        roll, pitch, yaw = euler_zyx_deg_from_R(R)  # degrees (your function)
+                        phi = view_angle_deg(R, tvec)
 
-            # Draw axes (length = half tag size)
-            cv2.drawFrameAxes(vis, K, dist, rvec, tvec, tag_size * 0.5)
+                        # Prepare row for writing if user presses key this frame
+                        ts = time.time()
+                        last_row = f"{ts:.6f} {x:.6f} {y:.6f} {z:.6f} {roll:.3f} {pitch:.3f} {yaw:.3f} {phi:.3f}\n"
 
-            # Log pose values
-            R, _ = cv2.Rodrigues(rvec)
-            x, y, z = map(float, tvec.reshape(3))
-            roll, pitch, yaw = euler_zyx_deg_from_R(R)
-            phi = view_angle_deg(R, tvec)
-            ts = time.time()
-
-            f.write(f"{ts:.6f} {x:.6f} {y:.6f} {z:.6f} "
-                    f"{roll:.3f} {pitch:.3f} {yaw:.3f} {phi:.3f}\n")
-            f.flush()
+                        cv2.putText(vis, "Press SPACE or 's' to save pose",
+                                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                                    (0, 255, 255), 2)
 
             cv2.imshow('Visualize', vis)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord('q'):
                 break
+
+            # Write ONLY when user presses SPACE or 's'
+            if key in (ord('s'), 32):  # 32 = space
+                if last_row is not None:
+                    f.write(last_row)
+                    f.flush()
+                    print("Saved pose.")
+                else:
+                    print("No valid pose in this frame; nothing saved.")
 
     cap.release()
     cv2.destroyAllWindows()
