@@ -102,11 +102,16 @@ def view_angle_deg(R, tvec):
     return float(min(phi, 180.0 - phi))
 
 
+import cv2
+import numpy as np
+import time
+
 def cam_loop(detector, K, dist, out_txt, tag_size, cam_index=0, expected_id=None):
     cap = cv2.VideoCapture(cam_index)
     if not cap.isOpened():
         raise RuntimeError("Could not open camera")
 
+    cv2.namedWindow('Visualize', cv2.WINDOW_NORMAL)
 
     with open(out_txt, "w") as f:
         f.write("timestamp x y z roll pitch yaw view_angle_deg\n")
@@ -119,7 +124,12 @@ def cam_loop(detector, K, dist, out_txt, tag_size, cam_index=0, expected_id=None
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             corners, ids, _ = detector.detectMarkers(gray)
 
+            vis = frame.copy()
+
             if ids is None or len(ids) == 0:
+                cv2.imshow('Visualize', vis)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
                 continue
 
             # choose tag: expected_id if provided else first one
@@ -128,25 +138,48 @@ def cam_loop(detector, K, dist, out_txt, tag_size, cam_index=0, expected_id=None
                 ids_flat = ids.reshape(-1)
                 matches = np.where(ids_flat == expected_id)[0]
                 if len(matches) == 0:
+                    cv2.imshow('Visualize', vis)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
                     continue
                 chosen_idx = int(matches[0])
 
             c2d = corners[chosen_idx][0]
+            tag_id = int(ids[chosen_idx][0])
+
+            # Draw marker outline
+            pts = c2d.astype(int)
+            for a, b in zip(pts, np.roll(pts, -1, axis=0)):
+                cv2.line(vis, tuple(a), tuple(b), (0, 255, 0), 2)
+            cv2.putText(vis, f"id:{tag_id}", tuple(pts[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+
             rvec, tvec = pose_from_aruco_corners(c2d, tag_size, K, dist)
             if tvec is None:
+                cv2.imshow('Visualize', vis)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
                 continue
 
+            # Draw axes (length = half tag size)
+            cv2.drawFrameAxes(vis, K, dist, rvec, tvec, tag_size * 0.5)
+
+            # Log pose values
             R, _ = cv2.Rodrigues(rvec)
             x, y, z = map(float, tvec.reshape(3))
             roll, pitch, yaw = euler_zyx_deg_from_R(R)
             phi = view_angle_deg(R, tvec)
-            ts = time()
+            ts = time.time()
 
             f.write(f"{ts:.6f} {x:.6f} {y:.6f} {z:.6f} "
                     f"{roll:.3f} {pitch:.3f} {yaw:.3f} {phi:.3f}\n")
             f.flush()
 
+            cv2.imshow('Visualize', vis)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
     cap.release()
+    cv2.destroyAllWindows()
 
 
 def main():
