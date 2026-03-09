@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import json
 from argparse import ArgumentParser
+from time import strftime, time
 
 
 def read_calib(c_path):
@@ -11,27 +12,6 @@ def read_calib(c_path):
     cam_matrix = np.array(calib['camera_matrix'], dtype=np.float64)
     dist = np.array(calib['distortion_coefficients'], dtype=np.float64)
     return cam_matrix, dist
-
-
-def read_gt(gt_path):
-    """
-    Expected JSON:
-      { "R": [[...],[...],[...]], "t": [x,y,z], "direction": "tag2cam" }
-    direction can be 'tag2cam' or 'cam2tag'
-    """
-    with open(gt_path, "r") as f:
-        gt = json.load(f)
-
-    R = np.array(gt["R"], dtype=np.float64)
-    t = np.array(gt["t"], dtype=np.float64).reshape(3)
-
-    direction = gt.get("direction", "tag2cam")
-    if direction == "cam2tag":
-        # invert cam->tag to tag->cam
-        R = R.T
-        t = -R @ t
-
-    return R, t
 
 
 def pose_from_aruco_corners(corner_2d, tag_size, K, dist):
@@ -91,75 +71,98 @@ def setup_detector():
     return detector
 
 
-def cam_loop(detector, calib, TAG_SIZE):
-    cam = cv2.VideoCapture(0)
-    # cv2.namedWindow('DETECTOR_WINDOW')
-    CAM_MATRIX, DIST_COEFFS = calib
+def euler_zyx_deg_from_R(R):
+    """
+    Returns roll, pitch, yaw in DEGREES using ZYX convention:
+      R = Rz(yaw) * Ry(pitch) * Rx(roll)
+    """
+    # yaw (Z)
+    yaw = np.arctan2(R[1, 0], R[0, 0])
+    # pitch (Y)
+    pitch = np.arctan2(-R[2, 0], np.sqrt(R[2, 1]**2 + R[2, 2]**2))
+    # roll (X)
+    roll = np.arctan2(R[2, 1], R[2, 2])
 
-    while cam.isOpened():
-        ok, frame = cam.read()
+    return (np.degrees(roll), np.degrees(pitch), np.degrees(yaw))
 
-        if not ok:
-            print('Camera not working')
-            break
 
-        gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        corners, ids, _ = detector.detectMarkers(gray_img)
-        res_img = frame.copy()
+def view_angle_deg(R, tvec):
+    """
+    Angle between tag normal and camera viewing direction (acute).
+    Tag normal is +Z in tag frame; in camera frame it's R[:,2].
+    Viewing direction (tag->camera) is -t/||t||.
+    """
+    n_cam = R[:, 2]
+    t = tvec.reshape(3)
+    d = np.linalg.norm(t)
+    if d < 1e-9:
+        return 0.0
+    v_cam = -t / d
+    phi = np.degrees(np.arccos(np.clip(np.dot(n_cam, v_cam), -1.0, 1.0)))
+    return float(min(phi, 180.0 - phi))
 
-        if ids is not None:
-            # rvecs, tvecs, _objPoints = detector.
-            # estimatePoseSingleMarkers(
-            #     corners, TAG_SIZE, CAM_MATRIX, DIST_COEFFS
-            # ) 
 
-            for i, (corner, id) in enumerate(zip(corners, ids)):
-                print('_________________DETECT_______________')
+def cam_loop(detector, K, dist, out_txt, tag_size, cam_index=0, expected_id=None):
+    cap = cv2.VideoCapture(cam_index)
+    if not cap.isOpened():
+        raise RuntimeError("Could not open camera")
 
-                c2d = corner[0]  # (4,2)
-                rvec, tvec = pose_from_aruco_corners(c2d, TAG_SIZE, CAM_MATRIX, DIST_COEFFS)
-                if tvec is None:
+
+    with open(out_txt, "w") as f:
+        f.write("timestamp x y z roll pitch yaw view_angle_deg\n")
+
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            corners, ids, _ = detector.detectMarkers(gray)
+
+            if ids is None or len(ids) == 0:
+                continue
+
+            # choose tag: expected_id if provided else first one
+            chosen_idx = 0
+            if expected_id is not None:
+                ids_flat = ids.reshape(-1)
+                matches = np.where(ids_flat == expected_id)[0]
+                if len(matches) == 0:
                     continue
+                chosen_idx = int(matches[0])
 
-                x, y, z = tvec.flatten()
-                print(f"id={id}  x={x:.3f}m  y={y:.3f}m  z={z:.3f}m")
-                print(rvec)
+            c2d = corners[chosen_idx][0]
+            rvec, tvec = pose_from_aruco_corners(c2d, tag_size, K, dist)
+            if tvec is None:
+                continue
 
-                # Draw axes on the tag (helps sanity-check pose)
-                cv2.drawFrameAxes(res_img, CAM_MATRIX, DIST_COEFFS, rvec, tvec, TAG_SIZE * 0.5)
+            R, _ = cv2.Rodrigues(rvec)
+            x, y, z = map(float, tvec.reshape(3))
+            roll, pitch, yaw = euler_zyx_deg_from_R(R)
+            phi = view_angle_deg(R, tvec)
+            ts = time()
 
-                pt1, pt2, pt3, pt4 = [tuple(map(int, pt)) for pt in corner[0]]
-                id = id[0]
+            f.write(f"{ts:.6f} {x:.6f} {y:.6f} {z:.6f} "
+                    f"{roll:.3f} {pitch:.3f} {yaw:.3f} {phi:.3f}\n")
+            f.flush()
 
-                cv2.line(res_img, pt1, pt2, (0, 255, 0), 5)
-                cv2.line(res_img, pt2, pt3, (0, 255, 0), 5)
-                cv2.line(res_img, pt3, pt4, (0, 255, 0), 5)
-                cv2.line(res_img, pt4, pt1, (0, 255, 0), 5)
-
-                fontp = ((pt1[0] - 10), (pt1[1] - 10))
-                midp = ((pt1[0] + pt3[0]) // 2, (pt1[1] + pt3[1]) // 2)
-                cv2.putText(res_img, f'id:{id}', fontp, cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 5)
-                cv2.circle(res_img, midp, 2, (0, 0, 255), 5)
-
-        cv2.imshow('DETECTOR_WINDOW', res_img)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    cam.release()
-    # cv2.destroyWindow('DETECTOR_WINDOW')
+    cap.release()
 
 
 def main():
     parser = ArgumentParser()
     parser.add_argument('calib_file', type=str)
-    parser.add_argument('gt_file', type=str)
+    parser.add_argument('out_file', type=str)
+    parser.add_argument("--tag_size", type=float, default=0.30)
+    parser.add_argument("--cam", type=int, default=0)
+    parser.add_argument("--expected_id", type=int, default=None)
     args = parser.parse_args()
 
-    TAG_SIZE = 0.3
-    calib = read_calib(args.calib_file)
-    gt = read_gt(args.gt_file)
     detector = setup_detector()
-    cam_loop(detector, calib, TAG_SIZE)
+    K, dist = read_calib(args.calib_file)
+    detector = setup_detector()
+    out_txt = f"{args.out_file}/out_{strftime('%H_%M_%S')}.txt"
+    cam_loop(detector, K, dist, out_txt, args.tag_size, cam_index=args.cam, expected_id=args.expected_id)
 
 
 if __name__ == '__main__':
