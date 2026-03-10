@@ -159,7 +159,7 @@ def cam_loop(detector, K, dist, out_txt, tag_size, cam_index=0, expected_id=None
                         phi = view_angle_deg(R, tvec)
 
                         # Prepare row for writing if user presses key this frame
-                        ts = time.time()
+                        ts = time()
                         last_row = f"{ts:.6f} {x:.6f} {y:.6f} {z:.6f} {roll:.3f} {pitch:.3f} {yaw:.3f} {phi:.3f}\n"
 
                         cv2.putText(vis, "Press SPACE or 's' to save pose",
@@ -173,13 +173,17 @@ def cam_loop(detector, K, dist, out_txt, tag_size, cam_index=0, expected_id=None
                 break
 
             # Write ONLY when user presses SPACE or 's'
-            if key in (ord('s'), 32):  # 32 = space
+            if key == ord('s'):  # 32 = space
                 if last_row is not None:
                     f.write(last_row)
                     f.flush()
-                    print("Saved pose.")
+                    print("Saved pose in csv")
                 else:
                     print("No valid pose in this frame; nothing saved.")
+
+            if key == ord('f'):
+                cv2.imwrite(f'experiments/at_images/pose_{strftime("%H_%M_%S")}.png', vis)
+                print("Saved image")
 
     cap.release()
     cv2.destroyAllWindows()
